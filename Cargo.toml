@@ -1,0 +1,7 @@
+[package]
+edition = "2024"
+name = "aarch64-cpu-ext"
+version = "0.1.0"
+
+[dependencies]
+aarch64-cpu = "10"
