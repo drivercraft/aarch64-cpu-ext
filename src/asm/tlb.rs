@@ -30,6 +30,7 @@ register_bitfields![u64,
     ],
 ];
 
+#[inline]
 pub fn tlbi(val: impl sealed::Tlbi) {
     val.tlbi();
 }
@@ -61,26 +62,37 @@ macro_rules! tlbi_all {
     };
 }
 
-tlbi_all!(ALLEL1);
-tlbi_all!(ALLEL2);
-tlbi_all!(ALLEL3);
+tlbi_all!(ALLE1);
+tlbi_all!(ALLE2);
+tlbi_all!(ALLE3);
 
-tlbi_all!(ALLEL1IS);
-tlbi_all!(ALLEL1OS);
+tlbi_all!(ALLE1IS);
+// tlbi_all!(ALLE1OS);
 
-tlbi_all!(ALLEL2IS);
-tlbi_all!(ALLEL2OS);
+tlbi_all!(ALLE2IS);
+// tlbi_all!(ALLE2OS);
 
-tlbi_all!(ALLEL3IS);
-tlbi_all!(ALLEL3OS);
+tlbi_all!(ALLE3IS);
+// tlbi_all!(ALLE3OS);
+
+tlbi_all!(VMALLE1);
+tlbi_all!(VMALLE1IS);
+// tlbi_all!(VMALLE1OS);
+
+#[inline]
+fn va_to_tlbi_va(va: usize) -> u64 {
+    const VA_MASK: u64 = (1 << 44) - 1; // VA[55:12] => bits[43:0]Add commentMore actions
+    (va as u64 >> 12) & VA_MASK
+}
 
 macro_rules! tlbi_va {
     ($A:ident) => {
         pub struct $A(u64);
 
         impl $A {
+            #[inline]
             pub fn new(asid: usize, va: usize) -> Self {
-                Self((TlbiVA::VA.val(va as u64) +
+                Self((TlbiVA::VA.val(va_to_tlbi_va(va)) +
                     TlbiVA::ASID.val(asid as u64)).value)
             }
         }
@@ -107,19 +119,20 @@ tlbi_va!(VAE2);
 tlbi_va!(VAE3);
 
 tlbi_va!(VAE1IS);
-tlbi_va!(VAE1OS);
+// tlbi_va!(VAE1OS);
 
 tlbi_va!(VAE2IS);
-tlbi_va!(VAE2OS);
+// tlbi_va!(VAE2OS);
 
 tlbi_va!(VAE3IS);
-tlbi_va!(VAE3OS);
+// tlbi_va!(VAE3OS);
 
 macro_rules! tlbi_asid {
     ($A:ident) => {
         pub struct $A(u64);
 
         impl $A {
+            #[inline]
             pub fn new(asid: usize) -> Self {
                 Self(TlbiASID::ASID.val(asid as u64).value)
             }
@@ -144,15 +157,16 @@ macro_rules! tlbi_asid {
 
 tlbi_asid!(ASIDE1);
 tlbi_asid!(ASIDE1IS);
-tlbi_asid!(ASIDE1OS);
+// tlbi_asid!(ASIDE1OS);
 
 macro_rules! tlbi_vaa {
     ($A:ident) => {
         pub struct $A(u64);
 
         impl $A {
+            #[inline]
             pub fn new(va: usize) -> Self {
-                Self(TlbiVAA::VA.val(va as u64).value)
+                Self(TlbiVAA::VA.val(va_to_tlbi_va(va)).value)
             }
         }
 
@@ -175,4 +189,4 @@ macro_rules! tlbi_vaa {
 
 tlbi_vaa!(VAAE1);
 tlbi_vaa!(VAAE1IS);
-tlbi_vaa!(VAAE1OS);
+// tlbi_vaa!(VAAE1OS);

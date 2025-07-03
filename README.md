@@ -80,6 +80,7 @@ dc(CVAC, address);  // Data cache clean by virtual address
 ## Dependencies
 
 - `aarch64-cpu` version 10 - Provides base AArch64 CPU functionality
+- `tock-registers` version 0.9 - Register access and manipulation utilities
 
 ## Target Architecture
 
@@ -87,7 +88,12 @@ This library is specifically designed for AArch64 (ARM64) architecture and will 
 
 ## License
 
-This project's license is not specified. Please check with the project maintainers for licensing information.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
 
 ## Contributing
 
