@@ -65,6 +65,16 @@ pub fn dcache_range(op: CacheOp, addr: usize, size: usize) {
     isb(SY);
 }
 
+/// Performs a cache operation on a value.
+pub fn dcache_value<T>(op: CacheOp, v: &T) {
+    // Get the pointer to the value
+    let ptr = v as *const T as usize;
+    // Calculate the size of the value in bytes
+    let size = core::mem::size_of_val(v);
+    // Perform cache operation on the value
+    dcache_range(op, ptr, size);
+}
+
 /// Performs a cache operation on a cache level.
 /// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Instructions/DC-CISW--Data-or-unified-Cache-line-Clean-and-Invalidate-by-Set-Way
 /// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CTR-EL0--Cache-Type-Register?lang=en

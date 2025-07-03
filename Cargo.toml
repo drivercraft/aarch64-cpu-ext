@@ -5,3 +5,4 @@ version = "0.1.0"
 
 [dependencies]
 aarch64-cpu = "10"
+tock-registers = "0.9"
