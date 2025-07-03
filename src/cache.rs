@@ -66,7 +66,9 @@ pub fn dcache_range(op: CacheOp, addr: usize, size: usize) {
 }
 
 /// Performs a cache operation on a cache level.
-/// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Instructions/DC-CISW--Data-or-unified-Cache-line-Clean-and-Invalidate-by-Set-Way
+/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Instructions/DC-CISW--Data-or-unified-Cache-line-Clean-and-Invalidate-by-Set-Way
+/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CTR-EL0--Cache-Type-Register?lang=en
+/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CCSIDR-EL1--Current-Cache-Size-ID-Register?lang=en
 #[inline]
 fn dcache_level(op: CacheOp, level: u64) {
     assert!(level < 8, "armv8 level range is 0-7");
