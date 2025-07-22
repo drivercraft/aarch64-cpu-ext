@@ -5,3 +5,5 @@ pub mod cache;
 pub mod registers {
     pub use aarch64_cpu::registers::*;
 }
+
+pub mod structures;

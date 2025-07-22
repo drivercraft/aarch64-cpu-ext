@@ -15,6 +15,7 @@ This library extends the functionality of the `aarch64-cpu` crate by providing a
 
 - **Cache Operations**: Comprehensive cache management including clean, invalidate, and flush operations
 - **Cache Line Size Detection**: Runtime detection of cache line sizes using CTR_EL0 register
+- **Translation Table Entries**: Complete TTE64 implementation supporting 4KB/16KB/64KB granules and 48/52-bit addresses
 - **Assembly Wrappers**: Low-level assembly instruction wrappers for cache and TLB operations
 - **No Standard Library**: `#![no_std]` compatible for embedded and bare-metal environments
 - **Register Access**: Full access to AArch64 system registers through re-exported functionality
@@ -54,6 +55,52 @@ use aarch64_cpu_ext::registers::*;
 // Access system registers (re-exported from aarch64-cpu)
 let current_el = CurrentEL.get();
 ```
+
+### Translation Table Entries (TTE64)
+
+```rust
+use aarch64_cpu_ext::structures::tte::*;
+
+// Create a 4KB granule, 48-bit address table entry
+let table_addr = 0x10_0000; // Must be aligned to granule size
+let table_tte = TTE4K48::table(table_addr, 1); // attr_index = 1
+
+// Create a block entry with detailed configuration
+let block_addr = 0x20_0000;
+let config = BlockConfig {
+    attr_index: 0,
+    access_permissions: access_permissions::RW_EL1,
+    shareability: Shareability::InnerShareable,
+    executable: false,
+    privileged_executable: false,
+    contiguous: false,
+    not_global: false,
+};
+let block_tte = TTE4K48::new_block(block_addr, config);
+
+// Different granule sizes and address widths
+let tte_16k_48 = TTE16K48::table(0x4000, 0);   // 16KB granule, 48-bit
+let tte_64k_52 = TTE64K52::table(0x10000, 2);  // 64KB granule, 52-bit
+
+// Address alignment utilities
+let aligned_addr = TTE4K48::align_up(0x12345);
+let is_aligned = TTE64K48::is_aligned(0x10000);
+
+// Virtual address index calculation for page table walks
+let va = 0x1234_5678_9ABC_DEF0;
+let level0_index = TTE4K48::calculate_index(va, 0);
+```
+
+#### Supported Configurations
+
+| Granule | Address Width | Type Alias |
+|---------|---------------|------------|
+| 4KB     | 48-bit       | `TTE4K48`  |
+| 4KB     | 52-bit       | `TTE4K52`  |
+| 16KB    | 48-bit       | `TTE16K48` |
+| 16KB    | 52-bit       | `TTE16K52` |
+| 64KB    | 48-bit       | `TTE64K48` |
+| 64KB    | 52-bit       | `TTE64K52` |
 
 ### Low-level Assembly Operations
 
