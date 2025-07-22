@@ -266,6 +266,14 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         self.is_valid() && !self.reg.is_set(TTE64_REG::TYPE)
     }
 
+    pub fn set_is_table(&mut self) {
+        self.reg.modify(TTE64_REG::TYPE::Table);
+    }
+
+    pub fn set_is_block(&mut self) {
+        self.reg.modify(TTE64_REG::TYPE::Block);
+    }
+
     pub fn set_address(&mut self, addr: u64) {
         assert!(
             addr & G::MASK == 0,
