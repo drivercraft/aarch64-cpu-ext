@@ -347,19 +347,78 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         self.reg.read(TTE64_REG::ATTR_INDX)
     }
 
-    /// Check if this TTE allows execution
+    pub fn set_attr_index(&mut self, index: u64) {
+        assert!(index < 8, "Attribute index must be less than 8");
+        self.reg.modify(TTE64_REG::ATTR_INDX.val(index));
+    }
+
+    /// Check if this TTE allows execution (reads XN/UXN bit at [54])
+    ///
+    /// Returns `true` if execution is allowed, `false` if Execute Never is set.
+    /// The specific meaning depends on the translation regime - see `set_executable()` for details.
     pub fn is_executable(&self) -> bool {
         !self.reg.is_set(TTE64_REG::XN_UXN)
     }
 
-    /// Check if this TTE allows privileged execution
+    /// Set the execution permission (controls XN/UXN bit at [54])
+    ///
+    /// The meaning of this bit depends on the translation regime:
+    /// - **Single privilege level**: Execute-never (XN) - controls execution for the single privilege level
+    /// - **Two privilege levels**: Unprivileged Execute-never (UXN) - controls execution at unprivileged level
+    /// - **EL1&0 regime with HCR_EL2.{NV, NV1} = {1, 1}**: Functions as Privileged Execute-never (PXN) when UXN effective value is 0
+    ///
+    /// When `val` is:
+    /// - `true`: Allows execution (XN/UXN = 0)
+    /// - `false`: Blocks execution (XN/UXN = 1, Execute Never)
+    ///
+    /// See ARM DDI 0487K.a "Stage 1 instruction execution using Direct permissions"
+    pub fn set_executable(&mut self, val: bool) {
+        if val {
+            self.reg.modify(TTE64_REG::XN_UXN::ExecuteAllowed);
+        } else {
+            self.reg.modify(TTE64_REG::XN_UXN::ExecuteNever);
+        }
+    }
+
+    /// Check if this TTE allows privileged execution (reads PXN bit at [53])
+    ///
+    /// Returns `true` if privileged execution is allowed, `false` if Privileged Execute Never is set.
+    /// The specific meaning depends on the translation regime - see `set_privileged_executable()` for details.
     pub fn is_privileged_executable(&self) -> bool {
         !self.reg.is_set(TTE64_REG::PXN)
+    }
+
+    /// Set the privileged execution permission (controls PXN bit at [53])
+    ///
+    /// The meaning of this bit depends on the translation regime:
+    /// - **Single privilege level**: RES0 (Reserved, should be 0)
+    /// - **Two privilege levels**: Privileged Execute-never (PXN) - controls execution at privileged level
+    /// - **EL1&0 regime with HCR_EL2.{NV, NV1} = {1, 1}**: RES0 (Reserved, should be 0)
+    ///
+    /// When `val` is:
+    /// - `true`: Allows privileged execution (PXN = 0) - only valid for two privilege level regimes
+    /// - `false`: Blocks privileged execution (PXN = 1, Execute Never) - only valid for two privilege level regimes
+    ///
+    /// **Note**: In single privilege level regimes or specific nested virtualization configurations,
+    /// this bit is reserved and should be set to 0.
+    ///
+    /// See ARM DDI 0487K.a "Stage 1 instruction execution using Direct permissions"
+    pub fn set_privileged_executable(&mut self, val: bool) {
+        if val {
+            self.reg.modify(TTE64_REG::PXN::ExecuteAllowed);
+        } else {
+            self.reg.modify(TTE64_REG::PXN::ExecuteNever);
+        }
     }
 
     /// Get access permissions
     pub fn access_permission(&self) -> AccessPermission {
         AccessPermission::from_bits(self.reg.read(TTE64_REG::AP) as _).unwrap()
+    }
+
+    pub fn set_access_permission(&mut self, permission: AccessPermission) {
+        self.reg
+            .modify(TTE64_REG::AP.val(permission.as_bits() as u64));
     }
 
     /// Get shareability attributes

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aarch64-cpu-ext"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aarch64-cpu",
  "tock-registers 0.10.0",
