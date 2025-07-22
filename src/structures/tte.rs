@@ -248,6 +248,14 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         self.reg.is_set(TTE64_REG::VALID)
     }
 
+    pub fn set_is_valid(&mut self, val: bool) {
+        if val {
+            self.reg.modify(TTE64_REG::VALID::Valid);
+        } else {
+            self.reg.modify(TTE64_REG::VALID::Invalid);
+        }
+    }
+
     /// Check if this TTE is a table entry (vs block entry)
     pub fn is_table(&self) -> bool {
         self.is_valid() && self.reg.is_set(TTE64_REG::TYPE)

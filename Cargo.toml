@@ -7,7 +7,7 @@ keywords = ["aarch64", "arm64", "cache", "cpu", "no-std"]
 license = "MIT OR Apache-2.0"
 name = "aarch64-cpu-ext"
 repository = "https://github.com/drivercraft/aarch64-cpu-ext"
-version = "0.1.1"
+version = "0.1.2"
 
 [dependencies]
 aarch64-cpu = "10"
