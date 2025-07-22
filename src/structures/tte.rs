@@ -1,4 +1,4 @@
-use core::{  marker::PhantomData};
+use core::marker::PhantomData;
 
 /// This module defines the Translation Table Entry (TTE) structure used in AArch64 architecture.
 use tock_registers::{LocalRegisterCopy, register_bitfields};
@@ -32,8 +32,6 @@ impl Granule for Granule64KB {
 
 pub trait OA: Clone + Copy {
     const BITS: usize;
-    const OUTPUT_ADDR_BITS: usize;
-    const OUTPUT_ADDR_MASK: u64;
 }
 
 #[derive(Clone, Copy)]
@@ -41,8 +39,6 @@ pub struct OA48 {}
 
 impl OA for OA48 {
     const BITS: usize = 48; // 48-bit output address
-    const OUTPUT_ADDR_BITS: usize = 36; // bits [47:12] = 36 bits
-    const OUTPUT_ADDR_MASK: u64 = (1u64 << 36) - 1; // mask for 36 bits
 }
 
 #[derive(Clone, Copy)]
@@ -50,8 +46,6 @@ pub struct OA52 {}
 
 impl OA for OA52 {
     const BITS: usize = 52; // 52-bit output address
-    const OUTPUT_ADDR_BITS: usize = 40; // bits [51:12] = 40 bits
-    const OUTPUT_ADDR_MASK: u64 = (1u64 << 40) - 1; // mask for 40 bits
 }
 
 /// Access permissions for Stage 1 translation using Direct permissions
@@ -210,8 +204,6 @@ pub struct TTE64<G: Granule, O: OA> {
     _marker: PhantomData<(G, O)>,
 }
 
-
-
 impl<G: Granule, O: OA> TTE64<G, O> {
     /// Create a new TTE64 from a raw u64 value
     pub const fn new(value: u64) -> Self {
@@ -230,26 +222,18 @@ impl<G: Granule, O: OA> TTE64<G, O> {
     pub fn new_table(table_addr: u64) -> Self {
         let mut tte = Self::new(0);
 
-        tte.reg.modify(
-            TTE64_REG::VALID::Valid
-                + TTE64_REG::TYPE::Table
-                + TTE64_REG::AF::Accessed
-        );
+        tte.reg
+            .modify(TTE64_REG::VALID::Valid + TTE64_REG::TYPE::Table + TTE64_REG::AF::Accessed);
         tte.set_address(table_addr);
         tte
     }
 
     /// Create a block entry with BlockConfig
     pub fn new_block(block_addr: u64) -> Self {
-        
-
         let mut tte = Self::new(0);
 
-        tte.reg.modify(
-            TTE64_REG::VALID::Valid
-                + TTE64_REG::TYPE::Block
-                + TTE64_REG::AF::Accessed,
-        );
+        tte.reg
+            .modify(TTE64_REG::VALID::Valid + TTE64_REG::TYPE::Block + TTE64_REG::AF::Accessed);
         tte.set_address(block_addr);
         tte
     }
@@ -283,7 +267,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
             addr < (1u64 << O::BITS),
             "Address exceeds output address width"
         );
-        let val = addr >> G::M; // Shift to align with TTE address bits
+        let val = addr >> TTE64_REG::ADDR.shift; // Shift to align with TTE address bits
         self.reg.modify(TTE64_REG::ADDR.val(val));
     }
 
@@ -293,38 +277,25 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         if !self.is_valid() {
             return 0;
         }
-        
+
         let raw_value = self.reg.get();
         let m = G::M; // granule size log2 (12, 14, or 16)
-        
-        // Extract the main address field from ADDR register field (bits [49:12])
-        let main_addr = self.reg.read(TTE64_REG::ADDR) << m;
-        
+
+        let bit_start = m;
+        let bit_end =
+
         // Handle 52-bit output address extension
-        if O::BITS == 52 {
-            match m {
-                12 | 14 => {
-                    // For 4KB and 16KB granules with 52-bit OA:
-                    // Address bits [51:50] are stored in descriptor bits [9:8]
-                    let high_bits = (raw_value >> 8) & 0x3; // Extract bits [9:8]
-                    main_addr | (high_bits << 50)
-                },
-                16 => {
-                    // For 64KB granule with 52-bit OA:
-                    // Address bits [51:48] are stored in descriptor bits [15:12]
-                    let high_bits = (raw_value >> 12) & 0xF; // Extract bits [15:12]
-                    main_addr | (high_bits << 48)
-                },
-                _ => main_addr
-            }
+        if O::BITS == 52 && (G::M == 12 || G::M == 14) {
+            50
         } else {
-            // 48-bit OA: no high address bits needed
-            main_addr
-        }
+            48
+        };
+        let mask = ((1u64 << (bit_end - bit_start + 1)) - 1) << bit_start;
+        raw_value & mask
     }
 
     pub fn address_with_page_level(&self, level: usize) -> u64 {
-        if self.is_table(){
+        if self.is_table() {
             return self.address();
         }
         let raw_addr = self.reg.get();
@@ -344,7 +315,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         let bit_end = if O::BITS == 52 && (G::M == 12 || G::M == 14) {
             50
         } else {
-            48 
+            48
         };
         let mask = ((1u64 << (bit_end - bit_start + 1)) - 1) << bit_start;
         raw_addr & mask
@@ -539,7 +510,10 @@ mod tests {
         let block = 2 * 1024 * 1024; // 2MB
         let block_addr = 0x2000_0000_1000 + block; // 48-bit address aligned to 4KB 
         let tte_block = TTE::new_block(block_addr);
-        assert_eq!(tte_block.address_with_page_level(2), 0x2000_0000_0000 + block);
+        assert_eq!(
+            tte_block.address_with_page_level(2),
+            0x2000_0000_0000 + block
+        );
     }
 
     #[test]
@@ -547,10 +521,14 @@ mod tests {
         // Test 4KB granule with 52-bit output address
         type TTE = TTE64<Granule4KB, OA52>;
 
-        let table_addr = (1 << 52) - 0x1000; // 52-bit address with high bits
-        let tte_table = TTE::new_table(table_addr);  
+        let table_addr = (1 << 50) - 0x1000; // 52-bit address with high bits
+        let tte_table = TTE::new_table(table_addr);
         let read_addr = tte_table.address();
-        assert_eq!(read_addr, table_addr, "want {:#x} != read {:#x} address mismatch", table_addr, read_addr);
+        assert_eq!(
+            read_addr, table_addr,
+            "want {:#x} != read {:#x} address mismatch",
+            table_addr, read_addr
+        );
     }
 
     #[test]
@@ -559,9 +537,14 @@ mod tests {
         type TTE = TTE64<Granule16KB, OA48>;
 
         // Test table descriptor - must be aligned to 16KB boundary
-        let table_addr = 0x1000_0000_4000; // 48-bit address aligned to 16KB
+        let table_addr = (1 << 47) + 16 * 1024; // 48-bit address aligned to 16KB
         let tte_table = TTE::new_table(table_addr);
-        assert_eq!(tte_table.address(), table_addr);
+        let read = tte_table.address();
+        assert_eq!(
+            table_addr, read,
+            "want {:#x} != read {:#x} address mismatch",
+            table_addr, read
+        );
 
         // Test block descriptor
         let block_addr = 0x2000_0000_0000; // 48-bit address aligned to 16KB
@@ -575,13 +558,8 @@ mod tests {
         type TTE = TTE64<Granule16KB, OA52>;
 
         // Test with high address bits
-        let table_addr = 0xF_0000_1000_4000u64; // 52-bit address with high bits, aligned to 16KB
-        let mut tte_table = TTE::new_table(table_addr & 0xFFFF_FFFF_C000); // Base address aligned to 16KB
-
-        // Manually set the high address bits [51:50] in descriptor bits [9:8]
-        let high_bits = (table_addr >> 50) & 0x3;
-        let raw_val = tte_table.get() | (high_bits << 8);
-        let tte_table = TTE::new(raw_val);
+        let table_addr = (1 << 50) - 0x4000; // 52-bit address with high bits, aligned to 16KB
+        let tte_table = TTE::new_table(table_addr); // Base address aligned to 16KB
 
         assert_eq!(tte_table.address(), table_addr);
     }
@@ -607,16 +585,16 @@ mod tests {
         // Test 64KB granule with 52-bit output address
         type TTE = TTE64<Granule64KB, OA52>;
 
-        // Test with high address bits [51:48] in descriptor bits [15:12]
-        let table_addr = 0xF_0000_1001_0000u64; // 52-bit address with high bits, aligned to 64KB
-        let mut tte_table = TTE::new_table(table_addr & 0xFFFF_FFFF_0000); // Base address aligned to 64KB
+        let table_addr = 0xf00_1001_0000u64; // 52-bit address with high bits, aligned to 64KB
+        let tte_table = TTE::new_table(table_addr); // Base address aligned to 64KB
 
-        // Manually set the high address bits [51:48] in descriptor bits [15:12]
-        let high_bits = (table_addr >> 48) & 0xF;
-        let raw_val = tte_table.get() | (high_bits << 12);
-        let tte_table = TTE::new(raw_val);
-
-        assert_eq!(tte_table.address(), table_addr);
+        assert_eq!(
+            table_addr,
+            tte_table.address(),
+            "want {:#x} != read {:#x} address mismatch",
+            table_addr,
+            tte_table.address()
+        );
     }
 
     #[test]
@@ -645,17 +623,5 @@ mod tests {
         assert_eq!(Granule4KB::MASK, 0xFFF);
         assert_eq!(Granule16KB::MASK, 0x3FFF);
         assert_eq!(Granule64KB::MASK, 0xFFFF);
-    }
-
-    #[test]
-    fn test_oa_constants() {
-        // Test output address constants for n calculation
-        assert_eq!(OA48::BITS, 48);
-        assert_eq!(OA48::OUTPUT_ADDR_BITS, 36); // bits [47:12] = 36 bits
-        assert_eq!(OA48::OUTPUT_ADDR_MASK, (1u64 << 36) - 1);
-
-        assert_eq!(OA52::BITS, 52);
-        assert_eq!(OA52::OUTPUT_ADDR_BITS, 40); // bits [51:12] = 40 bits  
-        assert_eq!(OA52::OUTPUT_ADDR_MASK, (1u64 << 40) - 1);
     }
 }
