@@ -4,36 +4,30 @@ use core::marker::PhantomData;
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub trait Granule: Clone + Copy {
-    const SIZE: usize;
-    const SHIFT: usize;
-    const MASK: u64;
+    const M: u32;
+    const SIZE: usize = 2usize.pow(Self::M);
+    const MASK: u64 = (1u64 << Self::M) - 1; // Mask for alignment
 }
 
 #[derive(Clone, Copy)]
 pub struct Granule4KB {}
 
 impl Granule for Granule4KB {
-    const SIZE: usize = 4096; // 4KB granule size
-    const SHIFT: usize = 12; // log2(4096) = 12
-    const MASK: u64 = 0xFFF; // 4KB alignment mask
+    const M: u32 = 12; // log2(4096) = 12
 }
 
 #[derive(Clone, Copy)]
 pub struct Granule16KB {}
 
 impl Granule for Granule16KB {
-    const SIZE: usize = 16 * 1024; // 16KB granule size
-    const SHIFT: usize = 14; // log2(16384) = 14
-    const MASK: u64 = 0x3FFF; // 16KB alignment mask
+    const M: u32 = 14; // log2(16384) = 14
 }
 
 #[derive(Clone, Copy)]
 pub struct Granule64KB {}
 
 impl Granule for Granule64KB {
-    const SIZE: usize = 64 * 1024; // 64KB granule size
-    const SHIFT: usize = 16; // log2(65536) = 16
-    const MASK: u64 = 0xFFFF; // 64KB alignment mask
+    const M: u32 = 16; // log2(65536) = 16
 }
 
 pub trait OA: Clone + Copy {
@@ -60,46 +54,68 @@ impl OA for OA52 {
     const OUTPUT_ADDR_MASK: u64 = (1u64 << 40) - 1; // mask for 40 bits
 }
 
-/// Access permission constants for TTE64
-pub mod access_permissions {
-    pub const RW_EL1: u8 = 0b00; // Read/write at EL1, no access at EL0
-    pub const RW_EL1_EL0: u8 = 0b01; // Read/write at EL1 and EL0
-    pub const RO_EL1: u8 = 0b10; // Read-only at EL1, no access at EL0
-    pub const RO_EL1_EL0: u8 = 0b11; // Read-only at EL1 and EL0
+/// Access permissions for Stage 1 translation using Direct permissions
+/// Based on ARM DDI 0487K.a Table D8-49
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessPermission {
+    /// Read/write access for privileged level only, no access for unprivileged
+    /// AP[2:1] = 0b00 (when supporting two privilege levels)
+    /// For single privilege level: Read/write access
+    PrivilegedReadWrite = 0b00,
+
+    /// Read/write access for both privileged and unprivileged levels
+    /// AP[2:1] = 0b01
+    ReadWrite = 0b01,
+
+    /// Read-only access for privileged level only, no access for unprivileged
+    /// AP[2:1] = 0b10 (when supporting two privilege levels)
+    /// For single privilege level: Read-only access
+    PrivilegedReadOnly = 0b10,
+
+    /// Read-only access for both privileged and unprivileged levels
+    /// AP[2:1] = 0b11
+    ReadOnly = 0b11,
+}
+
+impl AccessPermission {
+    /// Get the AP field value for the TTE
+    pub const fn as_bits(self) -> u8 {
+        self as u8
+    }
+
+    /// Create from AP bits
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        match bits & 0b11 {
+            0b00 => Some(Self::PrivilegedReadWrite),
+            0b01 => Some(Self::ReadWrite),
+            0b10 => Some(Self::PrivilegedReadOnly),
+            0b11 => Some(Self::ReadOnly),
+            _ => None,
+        }
+    }
+
+    /// Check if this permission allows unprivileged access
+    pub const fn allows_unprivileged(self) -> bool {
+        matches!(self, Self::ReadWrite | Self::ReadOnly)
+    }
+
+    /// Check if this permission allows write access at the privileged level
+    pub const fn allows_privileged_write(self) -> bool {
+        matches!(self, Self::PrivilegedReadWrite | Self::ReadWrite)
+    }
+
+    /// Check if this permission allows write access at the unprivileged level
+    pub const fn allows_unprivileged_write(self) -> bool {
+        matches!(self, Self::ReadWrite)
+    }
 }
 
 /// Shareability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shareability {
-    NonShareable = 0b00,
-    OuterShareable = 0b10,
-    InnerShareable = 0b11,
-}
-
-/// Configuration for creating block entries
-#[derive(Debug, Clone, Copy)]
-pub struct BlockConfig {
-    pub attr_index: u8,
-    pub access_permissions: u8,
-    pub shareability: Shareability,
-    pub executable: bool,
-    pub privileged_executable: bool,
-    pub contiguous: bool,
-    pub not_global: bool,
-}
-
-impl Default for BlockConfig {
-    fn default() -> Self {
-        Self {
-            attr_index: 0,
-            access_permissions: access_permissions::RW_EL1,
-            shareability: Shareability::InnerShareable,
-            executable: false,
-            privileged_executable: false,
-            contiguous: false,
-            not_global: false,
-        }
-    }
+    NonShareable,
+    OuterShareable,
+    InnerShareable,
 }
 
 register_bitfields![u64,
@@ -129,11 +145,13 @@ register_bitfields![u64,
         ],
 
         /// Access permission bits
+        /// AP[2:1] for Stage 1 translation using Direct permissions
+        /// Based on ARM DDI 0487K.a Table D8-49
         AP OFFSET(6) NUMBITS(2) [
-            RW_EL1 = 0b00,      // Read/write at EL1, no access at EL0
-            RW_EL1_EL0 = 0b01,  // Read/write at EL1 and EL0
-            RO_EL1 = 0b10,      // Read-only at EL1, no access at EL0
-            RO_EL1_EL0 = 0b11   // Read-only at EL1 and EL0
+            PrivilegedReadWrite = 0b00,  // Read/write for privileged level only
+            ReadWrite = 0b01,            // Read/write for both privileged and unprivileged
+            PrivilegedReadOnly = 0b10,   // Read-only for privileged level only
+            ReadOnly = 0b11              // Read-only for both privileged and unprivileged
         ],
 
         /// Shareability field
@@ -155,14 +173,7 @@ register_bitfields![u64,
             NotGlobal = 1
         ],
 
-        /// Output address bits [47:12] for 48-bit PA
-        /// For table entries: points to next level table
-        /// For block entries: block base address
-        OUTPUT_ADDR OFFSET(12) NUMBITS(36) [],
-
-        /// Output address bits [51:48] for 52-bit PA (ARMv8.2+)
-        /// Only used when 52-bit PA is enabled
-        OUTPUT_ADDR_HIGH OFFSET(48) NUMBITS(4) [],
+        ADDR OFFSET(12) NUMBITS(38) [],
 
         /// Dirty bit modifier (ARMv8.1+)
         DBM OFFSET(51) NUMBITS(1) [
@@ -214,7 +225,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
     }
 
     /// Create a table entry with more convenient parameters
-    pub fn new_table(table_addr: u64, attr_index: u8, ns: bool, ap: u8) -> Self {
+    pub fn new_table(table_addr: u64) -> Self {
         assert!(
             table_addr & G::MASK == 0,
             "Table address must be aligned to granule size"
@@ -225,28 +236,19 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         );
 
         let mut tte = Self::new(0);
-        let addr_low = (table_addr >> G::SHIFT) & O::OUTPUT_ADDR_MASK;
 
         tte.reg.modify(
             TTE64_REG::VALID::Valid
                 + TTE64_REG::TYPE::Table
-                + TTE64_REG::OUTPUT_ADDR.val(addr_low & ((1u64 << 36) - 1))
-                + TTE64_REG::ATTR_INDX.val(attr_index as u64)
-                + TTE64_REG::NS.val(if ns { 1 } else { 0 })
-                + TTE64_REG::AP.val(ap as u64),
+                + TTE64_REG::AF::Accessed
+                + TTE64_REG::ADDR.val(table_addr),
         );
-
-        // For 52-bit addresses, set the high bits
-        if O::BITS == 52 {
-            let addr_high = (addr_low >> 36) & 0xF;
-            tte.reg.modify(TTE64_REG::OUTPUT_ADDR_HIGH.val(addr_high));
-        }
 
         tte
     }
 
     /// Create a block entry with BlockConfig
-    pub fn new_block(block_addr: u64, config: BlockConfig) -> Self {
+    pub fn new_block(block_addr: u64) -> Self {
         assert!(
             block_addr & G::MASK == 0,
             "Block address must be aligned to granule size"
@@ -257,99 +259,13 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         );
 
         let mut tte = Self::new(0);
-        let addr_low = (block_addr >> G::SHIFT) & O::OUTPUT_ADDR_MASK;
 
         tte.reg.modify(
             TTE64_REG::VALID::Valid
                 + TTE64_REG::TYPE::Block
-                + TTE64_REG::OUTPUT_ADDR.val(addr_low & ((1u64 << 36) - 1))
-                + TTE64_REG::ATTR_INDX.val(config.attr_index as u64)
-                + TTE64_REG::AP.val(config.access_permissions as u64)
-                + TTE64_REG::SH.val(config.shareability as u64)
-                + TTE64_REG::AF::Accessed
-                + TTE64_REG::XN_UXN.val(if config.executable { 0 } else { 1 })
-                + TTE64_REG::PXN.val(if config.privileged_executable { 0 } else { 1 })
-                + TTE64_REG::CONTIG.val(if config.contiguous { 1 } else { 0 })
-                + TTE64_REG::NG.val(if config.not_global { 1 } else { 0 }),
+                + TTE64_REG::ADDR.val(block_addr)
+                + TTE64_REG::AF::Accessed,
         );
-
-        // For 52-bit addresses, set the high bits
-        if O::BITS == 52 {
-            let addr_high = (addr_low >> 36) & 0xF;
-            tte.reg.modify(TTE64_REG::OUTPUT_ADDR_HIGH.val(addr_high));
-        }
-
-        tte
-    }
-
-    /// Create a table entry pointing to the next level page table
-    pub fn table(table_addr: u64, attr_index: u8) -> Self {
-        assert!(
-            table_addr & G::MASK == 0,
-            "Table address must be aligned to granule size"
-        );
-        assert!(
-            table_addr < (1u64 << O::BITS),
-            "Table address exceeds output address width"
-        );
-
-        let mut tte = Self::new(0);
-        let addr_low = (table_addr >> G::SHIFT) & O::OUTPUT_ADDR_MASK;
-
-        tte.reg.modify(
-            TTE64_REG::VALID::Valid
-                + TTE64_REG::TYPE::Table
-                + TTE64_REG::OUTPUT_ADDR.val(addr_low & ((1u64 << 36) - 1))
-                + TTE64_REG::ATTR_INDX.val(attr_index as u64),
-        );
-
-        // For 52-bit addresses, set the high bits
-        if O::BITS == 52 {
-            let addr_high = (addr_low >> 36) & 0xF;
-            tte.reg.modify(TTE64_REG::OUTPUT_ADDR_HIGH.val(addr_high));
-        }
-
-        tte
-    }
-
-    /// Create a block entry mapping a large page
-    pub fn block(
-        block_addr: u64,
-        attr_index: u8,
-        access_perms: u8,
-        shareability: u8,
-        executable: bool,
-        privileged_executable: bool,
-    ) -> Self {
-        assert!(
-            block_addr & G::MASK == 0,
-            "Block address must be aligned to granule size"
-        );
-        assert!(
-            block_addr < (1u64 << O::BITS),
-            "Block address exceeds output address width"
-        );
-
-        let mut tte = Self::new(0);
-        let addr_low = (block_addr >> G::SHIFT) & O::OUTPUT_ADDR_MASK;
-
-        tte.reg.modify(
-            TTE64_REG::VALID::Valid
-                + TTE64_REG::TYPE::Block
-                + TTE64_REG::OUTPUT_ADDR.val(addr_low & ((1u64 << 36) - 1))
-                + TTE64_REG::ATTR_INDX.val(attr_index as u64)
-                + TTE64_REG::AP.val(access_perms as u64)
-                + TTE64_REG::SH.val(shareability as u64)
-                + TTE64_REG::AF::Accessed
-                + TTE64_REG::XN_UXN.val(if executable { 0 } else { 1 })
-                + TTE64_REG::PXN.val(if privileged_executable { 0 } else { 1 }),
-        );
-
-        // For 52-bit addresses, set the high bits
-        if O::BITS == 52 {
-            let addr_high = (addr_low >> 36) & 0xF;
-            tte.reg.modify(TTE64_REG::OUTPUT_ADDR_HIGH.val(addr_high));
-        }
 
         tte
     }
@@ -374,19 +290,26 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         self.is_valid() && !self.reg.is_set(TTE64_REG::TYPE)
     }
 
+    pub fn set_address(&mut self, addr: u64) {
+        assert!(
+            addr & G::MASK == 0,
+            "Address must be aligned to granule size"
+        );
+        assert!(
+            addr < (1u64 << O::BITS),
+            "Address exceeds output address width"
+        );
+        self.reg.modify(TTE64_REG::ADDR.val(addr));
+    }
+
     /// Get the output address (physical address) from this TTE
     /// This extracts the address bits and reconstructs the physical address
-    pub fn output_address(&self) -> u64 {
-        let addr_low = self.reg.read(TTE64_REG::OUTPUT_ADDR);
-        let addr = if O::BITS == 52 {
-            // For 52-bit addresses, combine low and high bits
-            let addr_high = self.reg.read(TTE64_REG::OUTPUT_ADDR_HIGH);
-            (addr_high << 36) | addr_low
-        } else {
-            // For 48-bit addresses, only use low bits
-            addr_low
-        };
-        addr << G::SHIFT
+    pub fn address(&self) -> u64 {
+        if self.is_block(){
+
+        } else{
+
+        }
     }
 
     /// Check if this TTE has the access flag set
@@ -410,22 +333,35 @@ impl<G: Granule, O: OA> TTE64<G, O> {
     }
 
     /// Get access permissions
-    pub fn access_permissions(&self) -> u64 {
-        self.reg.read(TTE64_REG::AP)
+    pub fn access_permission(&self) -> AccessPermission {
+        AccessPermission::from_bits(self.reg.read(TTE64_REG::AP) as _).unwrap()
     }
 
     /// Get shareability attributes
-    pub fn shareability(&self) -> u64 {
-        self.reg.read(TTE64_REG::SH)
+    pub fn shareability(&self) -> Shareability {
+        match self.reg.read_as_enum(TTE64_REG::SH) {
+            Some(TTE64_REG::SH::Value::NonShareable) => Shareability::NonShareable,
+            Some(TTE64_REG::SH::Value::OuterShareable) => Shareability::OuterShareable,
+            Some(TTE64_REG::SH::Value::InnerShareable) => Shareability::InnerShareable,
+            None => unreachable!("invalid value"),
+        }
+    }
+
+    pub fn set_shareability(&mut self, shareability: Shareability) {
+        self.reg.modify(match shareability {
+            Shareability::NonShareable => TTE64_REG::SH::NonShareable,
+            Shareability::OuterShareable => TTE64_REG::SH::OuterShareable,
+            Shareability::InnerShareable => TTE64_REG::SH::InnerShareable,
+        });
     }
 
     /// Set the access flag
-    pub fn set_accessed(&mut self) {
+    pub fn set_access(&mut self) {
         self.reg.modify(TTE64_REG::AF::Accessed);
     }
 
     /// Clear the access flag
-    pub fn clear_accessed(&mut self) {
+    pub fn clear_access(&mut self) {
         self.reg.modify(TTE64_REG::AF::NotAccessed);
     }
 
@@ -512,7 +448,7 @@ pub mod block_sizes {
 impl<G: Granule, O: OA> TTE64<G, O> {
     /// Calculate the index for a virtual address at a given level
     pub fn calculate_index(va: u64, level: usize) -> usize {
-        match (G::SHIFT, level) {
+        match (G::M, level) {
             // 4KB granule
             (12, 0) => ((va >> 39) & 0x1FF) as usize, // 9 bits
             (12, 1) => ((va >> 30) & 0x1FF) as usize, // 9 bits
