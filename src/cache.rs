@@ -314,3 +314,179 @@ pub fn dcache_all(op: CacheOp) {
     dsb(SY);
     isb(SY);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cache_op_clone_copy() {
+        // Test that CacheOp implements Clone and Copy correctly
+        let op = CacheOp::Clean;
+        let op_copy = op;
+        let op_clone = op.clone();
+
+        assert_eq!(op, op_copy);
+        assert_eq!(op, op_clone);
+    }
+
+    #[test]
+    fn test_cache_op_debug() {
+        // Test that CacheOp implements Debug
+        let clean = CacheOp::Clean;
+        let invalidate = CacheOp::Invalidate;
+        let clean_inv = CacheOp::CleanAndInvalidate;
+
+        assert!(format!("{:?}", clean).contains("Clean"));
+        assert!(format!("{:?}", invalidate).contains("Invalidate"));
+        assert!(format!("{:?}", clean_inv).contains("CleanAndInvalidate"));
+    }
+
+    #[test]
+    fn test_cache_op_partial_eq() {
+        // Test that CacheOp implements PartialEq correctly
+        assert_eq!(CacheOp::Clean, CacheOp::Clean);
+        assert_eq!(CacheOp::Invalidate, CacheOp::Invalidate);
+        assert_eq!(CacheOp::CleanAndInvalidate, CacheOp::CleanAndInvalidate);
+
+        assert_ne!(CacheOp::Clean, CacheOp::Invalidate);
+        assert_ne!(CacheOp::Clean, CacheOp::CleanAndInvalidate);
+        assert_ne!(CacheOp::Invalidate, CacheOp::CleanAndInvalidate);
+    }
+
+    #[test]
+    fn test_cache_op_size() {
+        // Test that CacheOp is a simple enum with minimal size
+        assert_eq!(core::mem::size_of::<CacheOp>(), 1);
+    }
+
+    #[test]
+    fn test_tte_invalid_default() {
+        // Test that invalid TTE has correct default state
+        use crate::structures::tte::{Granule4KB, OA48, TTE64};
+
+        let tte = TTE64::<Granule4KB, OA48>::invalid();
+        assert!(!tte.is_valid());
+        assert!(!tte.is_table());
+        assert!(!tte.is_block());
+        assert_eq!(tte.get(), 0);
+    }
+
+    #[test]
+    fn test_granule_size_properties() {
+        // Test granule size properties
+        use crate::structures::tte::{Granule, Granule16KB, Granule4KB, Granule64KB};
+
+        // Test 4KB granule
+        assert_eq!(Granule4KB::M, 12);
+        assert_eq!(Granule4KB::SIZE, 4096);
+        assert_eq!(Granule4KB::MASK, 0xFFF);
+
+        // Test 16KB granule
+        assert_eq!(Granule16KB::M, 14);
+        assert_eq!(Granule16KB::SIZE, 16384);
+        assert_eq!(Granule16KB::MASK, 0x3FFF);
+
+        // Test 64KB granule
+        assert_eq!(Granule64KB::M, 16);
+        assert_eq!(Granule64KB::SIZE, 65536);
+        assert_eq!(Granule64KB::MASK, 0xFFFF);
+    }
+
+    #[test]
+    fn test_access_permission_from_bits() {
+        use crate::structures::tte::AccessPermission;
+
+        // Test conversion from bits to AccessPermission
+        assert_eq!(
+            AccessPermission::from_bits(0b00),
+            Some(AccessPermission::PrivilegedReadWrite)
+        );
+        assert_eq!(
+            AccessPermission::from_bits(0b01),
+            Some(AccessPermission::ReadWrite)
+        );
+        assert_eq!(
+            AccessPermission::from_bits(0b10),
+            Some(AccessPermission::PrivilegedReadOnly)
+        );
+        assert_eq!(
+            AccessPermission::from_bits(0b11),
+            Some(AccessPermission::ReadOnly)
+        );
+        assert_eq!(AccessPermission::from_bits(0b100), None); // Invalid bits
+    }
+
+    #[test]
+    fn test_access_permission_as_bits() {
+        use crate::structures::tte::AccessPermission;
+
+        assert_eq!(AccessPermission::PrivilegedReadWrite.as_bits(), 0b00);
+        assert_eq!(AccessPermission::ReadWrite.as_bits(), 0b01);
+        assert_eq!(AccessPermission::PrivilegedReadOnly.as_bits(), 0b10);
+        assert_eq!(AccessPermission::ReadOnly.as_bits(), 0b11);
+    }
+
+    #[test]
+    fn test_access_permission_checks() {
+        use crate::structures::tte::AccessPermission;
+
+        // Test allows_unprivileged
+        assert!(!AccessPermission::PrivilegedReadWrite.allows_unprivileged());
+        assert!(AccessPermission::ReadWrite.allows_unprivileged());
+        assert!(!AccessPermission::PrivilegedReadOnly.allows_unprivileged());
+        assert!(AccessPermission::ReadOnly.allows_unprivileged());
+
+        // Test allows_privileged_write
+        assert!(AccessPermission::PrivilegedReadWrite.allows_privileged_write());
+        assert!(AccessPermission::ReadWrite.allows_privileged_write());
+        assert!(!AccessPermission::PrivilegedReadOnly.allows_privileged_write());
+        assert!(!AccessPermission::ReadOnly.allows_privileged_write());
+
+        // Test allows_unprivileged_write
+        assert!(!AccessPermission::PrivilegedReadWrite.allows_unprivileged_write());
+        assert!(AccessPermission::ReadWrite.allows_unprivileged_write());
+        assert!(!AccessPermission::PrivilegedReadOnly.allows_unprivileged_write());
+        assert!(!AccessPermission::ReadOnly.allows_unprivileged_write());
+    }
+
+    #[test]
+    fn test_access_permission_partial_eq() {
+        use crate::structures::tte::AccessPermission;
+
+        assert_eq!(AccessPermission::ReadWrite, AccessPermission::ReadWrite);
+        assert_ne!(AccessPermission::ReadWrite, AccessPermission::ReadOnly);
+    }
+
+    #[test]
+    fn test_oa_bits() {
+        use crate::structures::tte::{OA, OA48, OA52};
+
+        assert_eq!(OA48::BITS, 48);
+        assert_eq!(OA52::BITS, 52);
+    }
+
+    #[test]
+    fn test_tte_alignment_helpers() {
+        use crate::structures::tte::{Granule, Granule4KB, TTE64};
+
+        type TTE = TTE64<Granule4KB, crate::structures::tte::OA48>;
+
+        // Test is_aligned
+        assert!(TTE::is_aligned(0x1000)); // 4KB aligned
+        assert!(TTE::is_aligned(0x2000)); // 8KB aligned
+        assert!(!TTE::is_aligned(0x1001)); // Not aligned
+        assert!(!TTE::is_aligned(0xFFF)); // Not aligned
+
+        // Test align_down
+        assert_eq!(TTE::align_down(0x1FFF), 0x1000);
+        assert_eq!(TTE::align_down(0x2000), 0x2000);
+        assert_eq!(TTE::align_down(0x3001), 0x3000);
+
+        // Test align_up
+        assert_eq!(TTE::align_up(0x1000), 0x1000);
+        assert_eq!(TTE::align_up(0x1001), 0x2000);
+        assert_eq!(TTE::align_up(0x1FFF), 0x2000);
+        assert_eq!(TTE::align_up(0x2000), 0x2000);
+    }
+}
