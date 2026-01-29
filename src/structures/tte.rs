@@ -1,14 +1,75 @@
+//! # Translation Table Entry (TTE) for AArch64
+//!
+//! This module defines the Translation Table Entry (TTE) structure used in AArch64
+//! architecture for virtual to physical address translation. It provides a type-safe
+//! abstraction over the raw hardware representation of page table entries.
+//!
+//! ## Overview
+//!
+//! AArch64 uses multi-level page tables (up to 4 levels) to translate virtual
+//! addresses to physical addresses. Each entry in the page table is represented
+//! by a 64-bit TTE that can be either:
+//!
+//! - **Table entry**: Points to the next level of the page table
+//! - **Block entry**: Directly maps a contiguous region of memory
+//! - **Invalid entry**: Marks the entry as not valid
+//!
+//! ## Granule Support
+//!
+//! The module supports three granule sizes:
+//! - **4KB**: Standard page size for most systems
+//! - **16KB**: Alternative granule for certain ARM implementations
+//! - **64KB**: Larger granule for improved TLB efficiency
+//!
+//! ## Output Address Sizes
+//!
+//! Two output address width configurations are supported:
+//! - **48-bit**: Standard configuration for most systems (up to 256 TB physical memory)
+//! - **52-bit**: Extended configuration for systems with larger physical memory (up to 4 PB)
+//!
 use core::marker::PhantomData;
 
-/// This module defines the Translation Table Entry (TTE) structure used in AArch64 architecture.
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
+/// Trait defining granule (page table entry) size parameters.
+///
+/// A granule represents the minimum alignment and size unit for translation
+/// table entries and page mappings in the AArch64 memory management system.
+///
+/// # Associated Constants
+///
+/// - `M`: Log2 of the granule size in bytes
+/// - `SIZE`: The granule size in bytes (calculated as 2^M)
+/// - `MASK`: Bit mask for granule alignment (calculated as (1 << M) - 1)
+///
+/// # Type Safety
+///
+/// This trait is used as a type parameter to enforce correct alignment and
+/// size constraints at compile time when creating and manipulating TTEs.
 pub trait Granule: Clone + Copy {
+    /// Log2 of the granule size in bytes.
+    ///
+    /// For example:
+    /// - 4KB granule: M = 12 (2^12 = 4096)
+    /// - 16KB granule: M = 14 (2^14 = 16384)
+    /// - 64KB granule: M = 16 (2^16 = 65536)
     const M: u32;
+
+    /// The granule size in bytes (calculated as 2^M).
     const SIZE: usize = 2usize.pow(Self::M);
+
+    /// Bit mask for granule alignment (calculated as (1 << M) - 1).
+    ///
+    /// This mask can be used to check if an address is properly aligned
+    /// to the granule boundary: `(addr & MASK) == 0`.
     const MASK: u64 = (1u64 << Self::M) - 1; // Mask for alignment
 }
 
+/// 4KB granule marker type.
+///
+/// This type is used as a type parameter to indicate that a TTE uses the
+/// 4KB granule configuration. With a 4KB granule, the page table structure
+/// uses 9 bits at each level for indexing.
 #[derive(Clone, Copy)]
 pub struct Granule4KB {}
 
@@ -16,6 +77,11 @@ impl Granule for Granule4KB {
     const M: u32 = 12; // log2(4096) = 12
 }
 
+/// 16KB granule marker type.
+///
+/// This type is used as a type parameter to indicate that a TTE uses the
+/// 16KB granule configuration. With a 16KB granule, the page table structure
+/// uses 11 bits at levels 1-3 for indexing.
 #[derive(Clone, Copy)]
 pub struct Granule16KB {}
 
@@ -23,6 +89,11 @@ impl Granule for Granule16KB {
     const M: u32 = 14; // log2(16384) = 14
 }
 
+/// 64KB granule marker type.
+///
+/// This type is used as a type parameter to indicate that a TTE uses the
+/// 64KB granule configuration. With a 64KB granule, the page table structure
+/// uses different bit counts at each level (6, 13, 13 bits).
 #[derive(Clone, Copy)]
 pub struct Granule64KB {}
 
@@ -30,10 +101,28 @@ impl Granule for Granule64KB {
     const M: u32 = 16; // log2(65536) = 16
 }
 
+/// Trait defining output address (physical address) width parameters.
+///
+/// This trait specifies the number of bits available for the physical
+/// address in a translation table entry.
+///
+/// # Associated Constants
+///
+/// - `BITS`: The number of bits for the output address (typically 48 or 52)
 pub trait OA: Clone + Copy {
+    /// The number of bits available for the output address.
+    ///
+    /// Common values:
+    /// - 48 bits: Supports up to 256 TB of physical memory
+    /// - 52 bits: Supports up to 4 PB of physical memory (requires ARMv8.4-LPA)
     const BITS: usize;
 }
 
+/// 48-bit output address marker type.
+///
+/// This type is used as a type parameter to indicate that a TTE uses the
+/// 48-bit output address configuration, which is the standard configuration
+/// for most AArch64 systems supporting up to 256 TB of physical memory.
 #[derive(Clone, Copy)]
 pub struct OA48 {}
 
@@ -41,6 +130,12 @@ impl OA for OA48 {
     const BITS: usize = 48; // 48-bit output address
 }
 
+/// 52-bit output address marker type.
+///
+/// This type is used as a type parameter to indicate that a TTE uses the
+/// 52-bit output address configuration. This extended configuration requires
+/// ARMv8.4-LPA (Large Physical Address) support and enables addressing of
+/// up to 4 PB of physical memory.
 #[derive(Clone, Copy)]
 pub struct OA52 {}
 
@@ -48,26 +143,38 @@ impl OA for OA52 {
     const BITS: usize = 52; // 52-bit output address
 }
 
-/// Access permissions for Stage 1 translation using Direct permissions
-/// Based on ARM DDI 0487K.a Table D8-49
+/// Access permissions for Stage 1 translation using Direct permissions.
+///
+/// These permissions control read and write access for different privilege levels.
+/// The exact behavior depends on the translation regime (single or two privilege levels).
+///
+/// Based on ARM DDI 0487K.a Table D8-49.
+///
+/// # Variants
+///
+/// - `PrivilegedReadWrite`: Read/write access for privileged level only (AP\[2:1\] = 0b00)
+/// - `ReadWrite`: Read/write access for both privileged and unprivileged levels (AP\[2:1\] = 0b01)
+/// - `PrivilegedReadOnly`: Read-only access for privileged level only (AP\[2:1\] = 0b10)
+/// - `ReadOnly`: Read-only access for both privileged and unprivileged levels (AP\[2:1\] = 0b11)
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessPermission {
     /// Read/write access for privileged level only, no access for unprivileged
-    /// AP[2:1] = 0b00 (when supporting two privilege levels)
+    /// AP\[2:1\] = 0b00 (when supporting two privilege levels)
     /// For single privilege level: Read/write access
     PrivilegedReadWrite = 0b00,
 
     /// Read/write access for both privileged and unprivileged levels
-    /// AP[2:1] = 0b01
+    /// AP\[2:1\] = 0b01
     ReadWrite = 0b01,
 
     /// Read-only access for privileged level only, no access for unprivileged
-    /// AP[2:1] = 0b10 (when supporting two privilege levels)
+    /// AP\[2:1\] = 0b10 (when supporting two privilege levels)
     /// For single privilege level: Read-only access
     PrivilegedReadOnly = 0b10,
 
     /// Read-only access for both privileged and unprivileged levels
-    /// AP[2:1] = 0b11
+    /// AP\[2:1\] = 0b11
     ReadOnly = 0b11,
 }
 
@@ -104,7 +211,18 @@ impl AccessPermission {
     }
 }
 
-/// Shareability
+/// Shareability attribute for memory regions.
+///
+/// Shareability controls the cache coherency behavior of memory accesses.
+/// It determines how changes to memory are propagated between different
+/// processors in a multi-core system.
+///
+/// # Variants
+///
+/// - `NonShareable`: Memory is not shared between processors; no coherency required
+/// - `OuterShareable`: Memory is shared across multiple clusters; requires outer cache coherency
+/// - `InnerShareable`: Memory is shared within a single cluster; requires inner cache coherency
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shareability {
     NonShareable,
@@ -139,7 +257,7 @@ register_bitfields![u64,
         ],
 
         /// Access permission bits
-        /// AP[2:1] for Stage 1 translation using Direct permissions
+        /// AP\[2:1\] for Stage 1 translation using Direct permissions
         /// Based on ARM DDI 0487K.a Table D8-49
         AP OFFSET(6) NUMBITS(2) [
             PrivilegedReadWrite = 0b00,  // Read/write for privileged level only
@@ -198,6 +316,17 @@ register_bitfields![u64,
     ]
 ];
 
+/// Translation Table Entry (TTE) for AArch64.
+///
+/// This struct provides a type-safe interface to AArch64 translation table entries.
+/// It uses phantom type parameters to enforce correct granule size and output
+/// address width at compile time.
+///
+/// # Type Parameters
+///
+/// * `G`: Granule size marker type (e.g., `Granule4KB`, `Granule16KB`, `Granule64KB`)
+/// * `O`: Output address width marker type (e.g., `OA48`, `OA52`)
+///
 #[derive(Clone, Copy)]
 pub struct TTE64<G: Granule, O: OA> {
     reg: LocalRegisterCopy<u64, TTE64_REG::Register>,
@@ -205,7 +334,14 @@ pub struct TTE64<G: Granule, O: OA> {
 }
 
 impl<G: Granule, O: OA> TTE64<G, O> {
-    /// Create a new TTE64 from a raw u64 value
+    /// Creates a new TTE from a raw 64-bit value.
+    ///
+    /// This constructor is useful when you need to create a TTE from a raw
+    /// value read from hardware or memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The raw 64-bit TTE value
     pub const fn new(value: u64) -> Self {
         Self {
             reg: LocalRegisterCopy::new(value),
@@ -213,12 +349,26 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
-    /// Create an invalid TTE (all zeros)
+    /// Creates an invalid TTE (all bits set to zero).
+    ///
+    /// An invalid TTE has the valid bit cleared and maps no memory.
+    /// This is useful for initializing page tables or unmapping regions.
     pub const fn invalid() -> Self {
         Self::new(0)
     }
 
-    /// Create a table entry with more convenient parameters
+    /// Creates a new table entry pointing to the next level of the page table.
+    ///
+    /// Table entries are used to build the multi-level page table structure.
+    /// Each table entry points to the physical address of the next level table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_addr` - Physical address of the next level table (must be aligned to granule size)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the address is not properly aligned to the granule size.
     pub fn new_table(table_addr: u64) -> Self {
         let mut tte = Self::new(0);
 
@@ -228,7 +378,19 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         tte
     }
 
-    /// Create a block entry with BlockConfig
+    /// Creates a new block entry mapping a contiguous memory region.
+    ///
+    /// Block entries provide a direct mapping of a contiguous memory region
+    /// without requiring additional levels of page table lookup. This can
+    /// improve TLB efficiency for large mappings.
+    ///
+    /// # Arguments
+    ///
+    /// * `block_addr` - Physical address of the block (must be aligned to the block size)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the address is not properly aligned to the granule size.
     pub fn new_block(block_addr: u64) -> Self {
         let mut tte = Self::new(0);
 
@@ -238,16 +400,34 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         tte
     }
 
-    /// Get the raw u64 value
+    /// Returns the raw 64-bit value of this TTE.
+    ///
+    /// This is useful when you need to write the TTE to hardware or memory.
+    ///
+    /// # Returns
+    ///
+    /// The raw 64-bit TTE value
     pub fn get(&self) -> u64 {
         self.reg.get()
     }
 
-    /// Check if this TTE is valid
+    /// Checks if this TTE is valid.
+    ///
+    /// A valid TTE has the valid bit set and represents either a table
+    /// entry or a block entry. Invalid TTEs map no memory.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the TTE is valid, `false` otherwise
     pub fn is_valid(&self) -> bool {
         self.reg.is_set(TTE64_REG::VALID)
     }
 
+    /// Sets the valid bit of this TTE.
+    ///
+    /// # Arguments
+    ///
+    /// * `val` - `true` to mark the entry as valid, `false` to mark as invalid
     pub fn set_is_valid(&mut self, val: bool) {
         if val {
             self.reg.modify(TTE64_REG::VALID::Valid);
@@ -256,24 +436,59 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
-    /// Check if this TTE is a table entry (vs block entry)
+    /// Checks if this TTE is a table entry.
+    ///
+    /// Table entries point to the next level of the page table structure.
+    ///
+    /// # Returns
+    ///
+    /// `true` if this is a valid table entry, `false` otherwise
     pub fn is_table(&self) -> bool {
         self.is_valid() && self.reg.is_set(TTE64_REG::TYPE)
     }
 
-    /// Check if this TTE is a block entry (vs table entry)
+    /// Checks if this TTE is a block entry.
+    ///
+    /// Block entries directly map a contiguous memory region without
+    /// requiring additional page table lookups.
+    ///
+    /// # Returns
+    ///
+    /// `true` if this is a valid block entry, `false` otherwise
     pub fn is_block(&self) -> bool {
         self.is_valid() && !self.reg.is_set(TTE64_REG::TYPE)
     }
 
+    /// Sets this TTE to be a table entry.
+    ///
+    /// This marks the entry as a table descriptor type. The entry must
+    /// already be valid.
     pub fn set_is_table(&mut self) {
         self.reg.modify(TTE64_REG::TYPE::Table);
     }
 
+    /// Sets this TTE to be a block entry.
+    ///
+    /// This marks the entry as a block descriptor type. The entry must
+    /// already be valid.
     pub fn set_is_block(&mut self) {
         self.reg.modify(TTE64_REG::TYPE::Block);
     }
 
+    /// Sets the output (physical) address for this TTE.
+    ///
+    /// The address must be properly aligned according to the granule size
+    /// and must fit within the output address width.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The physical address to set
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The address is not aligned to the granule size
+    /// - The address exceeds the output address width
     pub fn set_address(&mut self, addr: u64) {
         assert!(
             addr & G::MASK == 0,
@@ -287,8 +502,22 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         self.reg.modify(TTE64_REG::ADDR.val(val));
     }
 
-    /// Get the output address (physical address) from this TTE
-    /// This extracts the address bits and reconstructs the physical address
+    /// Gets the output (physical) address from this TTE.
+    ///
+    /// This extracts the address bits from the TTE and reconstructs the
+    /// physical address. For table entries, this returns the address of
+    /// the next-level table. For block entries, this returns the base
+    /// address of the mapped block.
+    ///
+    /// # Returns
+    ///
+    /// The physical address (0 if the TTE is invalid)
+    ///
+    /// # Note
+    ///
+    /// This method returns 0 for invalid TTEs. Check `is_valid()` first
+    /// if you need to distinguish between invalid entries and valid
+    /// entries at address 0.
     pub fn address(&self) -> u64 {
         if !self.is_valid() {
             return 0;
@@ -310,6 +539,25 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         raw_value & mask
     }
 
+    /// Gets the output address for a block entry at a specific page table level.
+    ///
+    /// This method calculates the base address of a block mapping considering
+    /// the block size at the specified level. This is useful for extracting
+    /// the correct base address from block entries, as block entries store
+    /// only the upper address bits (the lower bits are implied zeros).
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The page table level (0-3)
+    ///
+    /// # Returns
+    ///
+    /// The physical address of the block (for table entries, returns the
+    /// same as `address()`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the granule size and level combination is invalid.
     pub fn address_with_page_level(&self, level: usize) -> u64 {
         if self.is_table() {
             return self.address();
@@ -337,22 +585,48 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         raw_addr & mask
     }
 
-    /// Check if this TTE has the access flag set
+    /// Checks if the access flag is set.
+    ///
+    /// The access flag is set by hardware on the first access to a page.
+    /// It can be used by software to implement page aging algorithms.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the access flag is set, `false` otherwise
     pub fn is_accessed(&self) -> bool {
         self.reg.is_set(TTE64_REG::AF)
     }
 
-    /// Get the memory attribute index
+    /// Gets the memory attribute index.
+    ///
+    /// The attribute index selects a memory attribute configuration from
+    /// the MAIR_EL1 (Memory Attribute Indirection Register) or MAIR_EL2/EL3.
+    ///
+    /// # Returns
+    ///
+    /// The attribute index (0-7)
     pub fn attr_index(&self) -> u64 {
         self.reg.read(TTE64_REG::ATTR_INDX)
     }
 
+    /// Sets the memory attribute index.
+    ///
+    /// The attribute index selects a memory attribute configuration from
+    /// the MAIR_ELx registers. The index must be less than 8.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The attribute index (0-7)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index is >= 8.
     pub fn set_attr_index(&mut self, index: u64) {
         assert!(index < 8, "Attribute index must be less than 8");
         self.reg.modify(TTE64_REG::ATTR_INDX.val(index));
     }
 
-    /// Check if this TTE allows execution (reads XN/UXN bit at [54])
+    /// Check if this TTE allows execution (reads XN/UXN bit at \[54\])
     ///
     /// Returns `true` if execution is allowed, `false` if Execute Never is set.
     /// The specific meaning depends on the translation regime - see `set_executable()` for details.
@@ -360,7 +634,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         !self.reg.is_set(TTE64_REG::XN_UXN)
     }
 
-    /// Set the execution permission (controls XN/UXN bit at [54])
+    /// Set the execution permission (controls XN/UXN bit at \[54\])
     ///
     /// The meaning of this bit depends on the translation regime:
     /// - **Single privilege level**: Execute-never (XN) - controls execution for the single privilege level
@@ -380,7 +654,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
-    /// Check if this TTE allows privileged execution (reads PXN bit at [53])
+    /// Check if this TTE allows privileged execution (reads PXN bit at \[53\])
     ///
     /// Returns `true` if privileged execution is allowed, `false` if Privileged Execute Never is set.
     /// The specific meaning depends on the translation regime - see `set_privileged_executable()` for details.
@@ -388,7 +662,7 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         !self.reg.is_set(TTE64_REG::PXN)
     }
 
-    /// Set the privileged execution permission (controls PXN bit at [53])
+    /// Set the privileged execution permission (controls PXN bit at \[53\])
     ///
     /// The meaning of this bit depends on the translation regime:
     /// - **Single privilege level**: RES0 (Reserved, should be 0)
@@ -411,17 +685,35 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
-    /// Get access permissions
+    /// Gets the access permissions.
+    ///
+    /// Returns the current access permission setting for this TTE.
+    ///
+    /// # Returns
+    ///
+    /// The current access permission
     pub fn access_permission(&self) -> AccessPermission {
         AccessPermission::from_bits(self.reg.read(TTE64_REG::AP) as _).unwrap()
     }
 
+    /// Sets the access permissions.
+    ///
+    /// # Arguments
+    ///
+    /// * `permission` - The access permission to set
     pub fn set_access_permission(&mut self, permission: AccessPermission) {
         self.reg
             .modify(TTE64_REG::AP.val(permission.as_bits() as u64));
     }
 
-    /// Get shareability attributes
+    /// Gets the shareability attribute.
+    ///
+    /// Returns the current shareability setting which determines how
+    /// cache coherency is managed for this memory region.
+    ///
+    /// # Returns
+    ///
+    /// The shareability attribute
     pub fn shareability(&self) -> Shareability {
         match self.reg.read_as_enum(TTE64_REG::SH) {
             Some(TTE64_REG::SH::Value::NonShareable) => Shareability::NonShareable,
@@ -431,6 +723,11 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
+    /// Sets the shareability attribute.
+    ///
+    /// # Arguments
+    ///
+    /// * `shareability` - The shareability attribute to set
     pub fn set_shareability(&mut self, shareability: Shareability) {
         self.reg.modify(match shareability {
             Shareability::NonShareable => TTE64_REG::SH::NonShareable,
@@ -439,72 +736,149 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         });
     }
 
-    /// Set the access flag
+    /// Sets the access flag.
+    ///
+    /// Marks this entry as accessed. This is typically set by hardware on
+    /// the first access, but can also be set manually.
     pub fn set_access(&mut self) {
         self.reg.modify(TTE64_REG::AF::Accessed);
     }
 
-    /// Clear the access flag
+    /// Clears the access flag.
+    ///
+    /// Marks this entry as not accessed. This can be useful for page
+    /// aging algorithms or for detecting unused pages.
     pub fn clear_access(&mut self) {
         self.reg.modify(TTE64_REG::AF::NotAccessed);
     }
 
-    /// Check if the contiguous bit is set
+    /// Checks if the contiguous bit is set.
+    ///
+    /// The contiguous bit hints that adjacent entries are part of a contiguous
+    /// mapping, which can allow hardware optimizations.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the contiguous bit is set, `false` otherwise
     pub fn is_contiguous(&self) -> bool {
         self.reg.is_set(TTE64_REG::CONTIG)
     }
 
-    /// Set the contiguous bit
+    /// Sets the contiguous bit.
+    ///
+    /// Marks this entry as part of a contiguous mapping. This can improve
+    /// TLB efficiency when adjacent entries form a contiguous region.
     pub fn set_contiguous(&mut self) {
         self.reg.modify(TTE64_REG::CONTIG::Contiguous);
     }
 
-    /// Check if this is a global mapping
+    /// Checks if this is a global mapping.
+    ///
+    /// Global mappings are not flushed by ASID-based TLB invalidations
+    /// and are shared across all address spaces.
+    ///
+    /// # Returns
+    ///
+    /// `true` if this is a global mapping, `false` if process-specific
     pub fn is_global(&self) -> bool {
         !self.reg.is_set(TTE64_REG::NG)
     }
 
-    /// Set the not-global bit (make it process-specific)
+    /// Sets the not-global bit.
+    ///
+    /// Marks this mapping as process-specific (non-global). Process-specific
+    /// mappings are included in ASID-based TLB invalidations.
     pub fn set_not_global(&mut self) {
         self.reg.modify(TTE64_REG::NG::NotGlobal);
     }
 
-    /// Check if dirty bit modifier is set (ARMv8.1+)
+    /// Checks if the dirty bit modifier is set.
+    ///
+    /// The dirty bit modifier (DBM) is part of the ARMv8.1 hardware
+    /// page table update feature. When set, it indicates that the page
+    /// is writable and dirty tracking is enabled.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the dirty bit modifier is set, `false` otherwise
     pub fn is_dirty_writable(&self) -> bool {
         self.reg.is_set(TTE64_REG::DBM)
     }
 
-    /// Get the software reserved bits
+    /// Gets the software reserved bits.
+    ///
+    /// Bits \[58:55\] are reserved for software use and can be used for
+    /// software-specific metadata.
+    ///
+    /// # Returns
+    ///
+    /// The software reserved bits (0-15)
     pub fn sw_reserved(&self) -> u64 {
         self.reg.read(TTE64_REG::SW_RESERVED)
     }
 
-    /// Set the software reserved bits
+    /// Sets the software reserved bits.
+    ///
+    /// Bits \[58:55\] are reserved for software use and can be used for
+    /// software-specific metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to set (only lower 4 bits are used)
     pub fn set_sw_reserved(&mut self, value: u64) {
         self.reg.modify(TTE64_REG::SW_RESERVED.val(value & 0xF));
     }
 }
 
 // Convenient type aliases for common configurations
-/// TTE with 4KB granule and 48-bit output addresses
+
+/// TTE with 4KB granule and 48-bit output addresses.
+///
+/// This is the most common configuration for AArch64 systems, providing
+/// 4KB page size support with up to 256 TB of physical addressable memory.
 pub type TTE4K48 = TTE64<Granule4KB, OA48>;
 
-/// TTE with 4KB granule and 52-bit output addresses
+/// TTE with 4KB granule and 52-bit output addresses.
+///
+/// This configuration provides 4KB page size support with extended 52-bit
+/// physical addresses, enabling up to 4 PB of addressable memory.
+/// Requires ARMv8.4-LPA support.
 pub type TTE4K52 = TTE64<Granule4KB, OA52>;
 
-/// TTE with 16KB granule and 48-bit output addresses
+/// TTE with 16KB granule and 48-bit output addresses.
+///
+/// This configuration provides 16KB page size support with up to 256 TB
+/// of physical addressable memory. Useful for systems that benefit from
+/// larger page sizes.
 pub type TTE16K48 = TTE64<Granule16KB, OA48>;
 
-/// TTE with 16KB granule and 52-bit output addresses
+/// TTE with 16KB granule and 52-bit output addresses.
+///
+/// This configuration provides 16KB page size support with extended 52-bit
+/// physical addresses, enabling up to 4 PB of addressable memory.
+/// Requires ARMv8.4-LPA support.
 pub type TTE16K52 = TTE64<Granule16KB, OA52>;
 
-/// TTE with 64KB granule and 48-bit output addresses
+/// TTE with 64KB granule and 48-bit output addresses.
+///
+/// This configuration provides 64KB page size support with up to 256 TB
+/// of physical addressable memory. The large page size can improve TLB
+/// efficiency for memory-intensive workloads.
 pub type TTE64K48 = TTE64<Granule64KB, OA48>;
 
-/// TTE with 64KB granule and 52-bit output addresses
+/// TTE with 64KB granule and 52-bit output addresses.
+///
+/// This configuration provides 64KB page size support with extended 52-bit
+/// physical addresses, enabling up to 4 PB of addressable memory.
+/// Requires ARMv8.4-LPA support.
 pub type TTE64K52 = TTE64<Granule64KB, OA52>;
 
-/// Constants for different granule sizes block sizes at different levels
+/// Constants for block sizes at different page table levels.
+///
+/// This module defines the block sizes for each granule size at each
+/// level of the page table hierarchy. Block entries can be used at levels
+/// 0, 1, or 2 to map large contiguous regions without requiring additional
+/// page table levels.
 pub mod block_sizes {
     /// Block sizes for 4KB granule
     pub mod granule_4k {
@@ -528,9 +902,26 @@ pub mod block_sizes {
     }
 }
 
-/// Helper functions for address calculations
+/// Helper functions for address calculations.
 impl<G: Granule, O: OA> TTE64<G, O> {
-    /// Calculate the index for a virtual address at a given level
+    /// Calculates the page table index for a virtual address at a given level.
+    ///
+    /// This function extracts the appropriate bits from a virtual address to
+    /// index into a page table at the specified level. The number of bits used
+    /// and their position depends on the granule size and the level.
+    ///
+    /// # Arguments
+    ///
+    /// * `va` - The virtual address
+    /// * `level` - The page table level (0-3)
+    ///
+    /// # Returns
+    ///
+    /// The index into the page table at the specified level
+    ///
+    /// # Panics
+    ///
+    /// Panics if the granule size and level combination is invalid.
     pub fn calculate_index(va: u64, level: usize) -> usize {
         match (G::M, level) {
             // 4KB granule
@@ -551,17 +942,46 @@ impl<G: Granule, O: OA> TTE64<G, O> {
         }
     }
 
-    /// Check if an address is aligned to the granule boundary
+    /// Checks if an address is aligned to the granule boundary.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if the address is aligned, `false` otherwise
     pub fn is_aligned(addr: u64) -> bool {
         (addr & G::MASK) == 0
     }
 
-    /// Align an address down to the granule boundary
+    /// Aligns an address down to the granule boundary.
+    ///
+    /// This rounds the address down to the nearest granule boundary.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to align
+    ///
+    /// # Returns
+    ///
+    /// The aligned address
     pub fn align_down(addr: u64) -> u64 {
         addr & !G::MASK
     }
 
-    /// Align an address up to the granule boundary
+    /// Aligns an address up to the granule boundary.
+    ///
+    /// This rounds the address up to the nearest granule boundary.
+    /// If the address is already aligned, it is returned unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to align
+    ///
+    /// # Returns
+    ///
+    /// The aligned address
     pub fn align_up(addr: u64) -> u64 {
         (addr + G::MASK) & !G::MASK
     }

@@ -1,3 +1,31 @@
+//! # Cache Management
+//!
+//! This module provides high-level cache management operations for AArch64 processors.
+//! It includes functions for managing data cache (dcache) and instruction cache (icache),
+//! as well as utilities for performing cache operations on specific memory ranges, values,
+//! and entire cache levels.
+//!
+//! ## Overview
+//!
+//! The cache management functions support three types of operations:
+//! - **Clean**: Write back dirty cache lines to memory
+//! - **Invalidate**: Mark cache lines as invalid (without writing back)
+//! - **Clean and Invalidate**: Write back dirty lines and then invalidate them
+//!
+//! ## Functions
+//!
+//! - [`icache_flush_all`]: Flushes the entire instruction cache
+//! - [`dcache_range`]: Performs cache operations on a memory range
+//! - [`dcache_value`]: Performs cache operations on a specific value
+//! - [`dcache_all`]: Performs cache operations on all data cache levels
+//! - [`cache_line_size`]: Returns the system cache line size
+//!
+//! ## Notes
+//!
+//! Cache operations typically require appropriate memory barriers to ensure visibility
+//! across cores. This module automatically inserts necessary barriers (DSB and ISB)
+//! after cache operations as required by the architecture.
+
 use core::arch::asm;
 
 use aarch64_cpu::{
@@ -7,6 +35,18 @@ use aarch64_cpu::{
 
 use crate::asm::cache::{CISW, CIVAC, CSW, CVAC, IALLU, ISW, IVAC, dc, ic};
 
+/// Flushes the entire instruction cache.
+///
+/// This function invalidates all entries in the instruction cache to ensure that
+/// any recent code modifications become visible to the processor. It performs the
+/// following operations:
+///
+/// 1. Invalidate all instruction caches at all levels using `IC IALLU`
+/// 2. Execute a data synchronization barrier (DSB) to ensure completion
+/// 3. Execute an instruction synchronization barrier (ISB) to ensure context synchronization
+///
+/// This is typically called after modifying code that may be cached, such as when
+/// applying patches, loading modules, or generating code at runtime.
 pub fn icache_flush_all() {
     ic(IALLU);
     dsb(NSH);
@@ -24,6 +64,15 @@ pub enum CacheOp {
     CleanAndInvalidate,
 }
 
+/// Returns the cache line size in bytes.
+///
+/// This function reads the CTR_EL0 (Cache Type Register) to determine the
+/// minimum data cache line size. The line size is calculated from the DminLine
+/// field which contains log2 of the number of words in the smallest cache line.
+///
+/// # Returns
+///
+/// The cache line size in bytes (typically 32, 64, or 128 bytes).
 #[inline(always)]
 pub fn cache_line_size() -> usize {
     unsafe {
@@ -34,6 +83,31 @@ pub fn cache_line_size() -> usize {
         // Calculate the cache line size: 4 * (2^log2_cache_line_size) bytes
         4 << log2_cache_line_size
     }
+}
+
+/// Represents the type of cache operation to perform.
+///
+/// This enum specifies whether a cache operation should clean, invalidate,
+/// or perform both clean and invalidate operations on cache lines.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub enum CacheOp {
+    /// Write back to memory.
+    ///
+    /// This operation writes dirty cache lines back to main memory without invalidating them.
+    /// The cache lines remain valid and can be accessed without going to memory.
+    Clean,
+    /// Invalidate cache.
+    ///
+    /// This operation marks cache lines as invalid. If the cache line is dirty,
+    /// the data is lost. Use this with caution as it can lead to data loss.
+    Invalidate,
+    /// Clean and invalidate.
+    ///
+    /// This operation first writes dirty cache lines back to memory and then
+    /// invalidates them. This ensures data consistency while forcing subsequent
+    /// accesses to fetch fresh data from memory.
+    CleanAndInvalidate,
 }
 
 /// Performs a cache operation on a single cache line.
@@ -48,6 +122,22 @@ fn _dcache_line(op: CacheOp, addr: usize) {
 }
 
 /// Performs a cache operation on a range of memory.
+///
+/// This function iterates over cache lines in the specified memory range and
+/// performs the specified cache operation on each line. The operation is
+/// performed on aligned cache line addresses to ensure correct behavior.
+///
+/// # Arguments
+///
+/// * `op` - The type of cache operation to perform
+/// * `addr` - The starting address of the memory range
+/// * `size` - The size of the memory range in bytes
+///
+/// # Notes
+///
+/// - The function aligns the start address to the cache line boundary
+/// - Data synchronization and instruction synchronization barriers are
+///   automatically inserted after the operation completes
 #[inline]
 pub fn dcache_range(op: CacheOp, addr: usize, size: usize) {
     let start = addr;
@@ -66,6 +156,19 @@ pub fn dcache_range(op: CacheOp, addr: usize, size: usize) {
 }
 
 /// Performs a cache operation on a value.
+///
+/// This is a convenience function that operates on a specific value rather than
+/// a raw memory range. It automatically calculates the address and size of the
+/// value and delegates to [`dcache_range`].
+///
+/// # Type Parameters
+///
+/// * `T` - The type of the value
+///
+/// # Arguments
+///
+/// * `op` - The type of cache operation to perform
+/// * `v` - A reference to the value to operate on
 pub fn dcache_value<T>(op: CacheOp, v: &T) {
     // Get the pointer to the value
     let ptr = v as *const T as usize;
@@ -75,20 +178,41 @@ pub fn dcache_value<T>(op: CacheOp, v: &T) {
     dcache_range(op, ptr, size);
 }
 
-/// Performs a cache operation on a cache level.
-/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Instructions/DC-CISW--Data-or-unified-Cache-line-Clean-and-Invalidate-by-Set-Way
-/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CTR-EL0--Cache-Type-Register?lang=en
-/// https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CCSIDR-EL1--Current-Cache-Size-ID-Register?lang=en
-/// https://github.com/u-boot/u-boot/blob/master/arch/arm/cpu/armv8/cache.S
+/// Performs a cache operation on a specific cache level using set/way operations.
 ///
-/// DC instruction set/way format:
-/// - Bits [63:32]: Reserved, RES0
-/// - Bits [31:4]: SetWay field containing:
-///   - Way field: bits[31:32-A] where A = Log2(ASSOCIATIVITY)  
+/// This function operates on a specific cache level by iterating through all
+/// sets and ways in that cache. It uses the DC (Data Cache) instructions with
+/// set/way operands to perform the specified operation on each cache line.
+///
+/// # Arguments
+///
+/// * `op` - The type of cache operation to perform
+/// * `level` - The cache level (0-7)
+///
+/// # Panics
+///
+/// Panics if `level` is greater than 7 (outside the valid ARMv8 range).
+///
+/// # Technical Details
+///
+/// The function reads cache parameters from CCSIDR_EL1 to determine:
+/// - Line size (in bytes)
+/// - Associativity (number of ways)
+/// - Number of sets
+///
+/// It then constructs set/way operands according to the ARM DC instruction format:
+/// - Bits [31:4]: Set/way field
+///   - Way field: bits[31:32-A] where A = Log2(ASSOCIATIVITY)
 ///   - Set field: bits[B-1:L] where B = L + S, L = Log2(LINELEN), S = Log2(NSETS)
-///   - Bits[L-1:4]: RES0
-/// - Bits [3:1]: Level (cache level minus 1)
-/// - Bit [0]: Reserved, RES0
+/// - Bits [3:1]: Cache level (minus 1)
+/// - Bit [0]: Reserved (RES0)
+///
+/// # References
+///
+/// - [DC CISW Instruction](https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Instructions/DC-CISW--Data-or-unified-Cache-line-Clean-and-Invalidate-by-Set-Way)
+/// - [CTR_EL0 Register](https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CTR-EL0--Cache-Type-Register)
+/// - [CCSIDR_EL1 Register](https://developer.arm.com/documentation/ddi0601/2024-09/AArch64-Registers/CCSIDR-EL1--Current-Cache-Size-ID-Register)
+/// - [U-Boot cache implementation](https://github.com/u-boot/u-boot/blob/master/arch/arm/cpu/armv8/cache.S)
 #[inline]
 fn dcache_level(op: CacheOp, level: u64) {
     assert!(level < 8, "armv8 level range is 0-7");
@@ -148,7 +272,21 @@ fn dcache_level(op: CacheOp, level: u64) {
     }
 }
 
-/// Performs a cache operation on all memory.
+/// Performs a cache operation on all data caches.
+///
+/// This function iterates through all cache levels (0-7) as defined in CLIDR_EL1
+/// and performs the specified cache operation on each data cache. It automatically
+/// detects the cache type at each level and only processes relevant caches:
+///
+/// - Data cache only (0b010)
+/// - Unified cache (0b100)
+/// - Separate instruction and data caches (0b100)
+///
+/// Instruction-only caches (0b001) and reserved values are skipped.
+///
+/// # Arguments
+///
+/// * `op` - The type of cache operation to perform
 pub fn dcache_all(op: CacheOp) {
     let clidr = CLIDR_EL1.get();
 
