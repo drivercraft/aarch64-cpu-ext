@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_granule_size_properties() {
         // Test granule size properties
-        use crate::structures::tte::{Granule, Granule16KB, Granule4KB, Granule64KB};
+        use crate::structures::tte::{Granule, Granule4KB, Granule16KB, Granule64KB};
 
         // Test 4KB granule
         assert_eq!(Granule4KB::M, 12);

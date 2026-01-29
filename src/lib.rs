@@ -36,7 +36,7 @@ pub mod structures;
 #[cfg(test)]
 mod tests {
     use crate::structures::tte::{
-        AccessPermission, Granule, Granule16KB, Granule4KB, Granule64KB, OA, OA48, OA52, TTE64,
+        AccessPermission, Granule, Granule4KB, Granule16KB, Granule64KB, OA, OA48, OA52, TTE64,
     };
 
     #[test]
@@ -130,7 +130,10 @@ mod tests {
     fn test_access_permission_equality() {
         assert_eq!(AccessPermission::ReadWrite, AccessPermission::ReadWrite);
         assert_ne!(AccessPermission::ReadWrite, AccessPermission::ReadOnly);
-        assert_eq!(AccessPermission::PrivilegedReadOnly, AccessPermission::PrivilegedReadOnly);
+        assert_eq!(
+            AccessPermission::PrivilegedReadOnly,
+            AccessPermission::PrivilegedReadOnly
+        );
     }
 
     #[test]
@@ -345,18 +348,33 @@ mod tests {
         use crate::structures::tte::block_sizes;
 
         // 4KB granule block sizes
-        assert_eq!(block_sizes::granule_4k::LEVEL1_BLOCK_SIZE, 1024 * 1024 * 1024);
+        assert_eq!(
+            block_sizes::granule_4k::LEVEL1_BLOCK_SIZE,
+            1024 * 1024 * 1024
+        );
         assert_eq!(block_sizes::granule_4k::LEVEL2_BLOCK_SIZE, 2 * 1024 * 1024);
         assert_eq!(block_sizes::granule_4k::LEVEL3_PAGE_SIZE, 4 * 1024);
 
         // 16KB granule block sizes
-        assert_eq!(block_sizes::granule_16k::LEVEL1_BLOCK_SIZE, 64 * 1024 * 1024 * 1024);
-        assert_eq!(block_sizes::granule_16k::LEVEL2_BLOCK_SIZE, 32 * 1024 * 1024);
+        assert_eq!(
+            block_sizes::granule_16k::LEVEL1_BLOCK_SIZE,
+            64 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            block_sizes::granule_16k::LEVEL2_BLOCK_SIZE,
+            32 * 1024 * 1024
+        );
         assert_eq!(block_sizes::granule_16k::LEVEL3_PAGE_SIZE, 16 * 1024);
 
         // 64KB granule block sizes
-        assert_eq!(block_sizes::granule_64k::LEVEL1_BLOCK_SIZE, 4 * 1024 * 1024 * 1024);
-        assert_eq!(block_sizes::granule_64k::LEVEL2_BLOCK_SIZE, 512 * 1024 * 1024);
+        assert_eq!(
+            block_sizes::granule_64k::LEVEL1_BLOCK_SIZE,
+            4 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            block_sizes::granule_64k::LEVEL2_BLOCK_SIZE,
+            512 * 1024 * 1024
+        );
         assert_eq!(block_sizes::granule_64k::LEVEL3_PAGE_SIZE, 64 * 1024);
     }
 }
